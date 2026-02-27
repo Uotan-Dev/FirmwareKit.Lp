@@ -172,12 +172,7 @@ public class MetadataBuilder
                 4096
             ) / MetadataFormat.LP_SECTOR_SIZE
         };
-
-        var nameBytes = Encoding.UTF8.GetBytes(MetadataFormat.LP_METADATA_DEFAULT_PARTITION_NAME);
-        for (var i = 0; i < nameBytes.Length && i < 35; i++)
-        {
-            super.PartitionName[i] = nameBytes[i];
-        }
+        super.PartitionName.SetName(MetadataFormat.LP_METADATA_DEFAULT_PARTITION_NAME);
 
         _blockDevices.Add(super);
     }
@@ -559,16 +554,15 @@ public class MetadataBuilder
             Groups = _groups.Select(g =>
                 {
                     var group = new LpMetadataPartitionGroup { Flags = g.Flags, MaximumSize = g.MaximumSize };
-                    var nameBytes = Encoding.UTF8.GetBytes(g.Name);
-                    for (var i = 0; i < nameBytes.Length && i < 35; i++)
-                    {
-                        group.Name[i] = nameBytes[i];
-                    }
+                    group.Name.SetName(g.Name);
                     return group;
                 }).ToList(),
 
             BlockDevices = _blockDevices
         };
+
+        // Cache group indices to avoid O(N^2) behavior in Export
+        var groupDict = _groups.Select((g, i) => (g.Name, i)).ToDictionary(x => x.Name, x => x.i);
 
         foreach (var p in _partitions)
         {
@@ -577,13 +571,9 @@ public class MetadataBuilder
                 Attributes = p.Attributes,
                 FirstExtentIndex = (uint)metadata.Extents.Count,
                 NumExtents = (uint)p.Extents.Count,
-                GroupIndex = (uint)_groups.FindIndex(g => g.Name == p.GroupName)
+                GroupIndex = (uint)groupDict[p.GroupName]
             };
-            var nameBytes = Encoding.UTF8.GetBytes(p.Name);
-            for (var i = 0; i < nameBytes.Length && i < 35; i++)
-            {
-                lpp.Name[i] = nameBytes[i];
-            }
+            lpp.Name.SetName(p.Name);
             metadata.Partitions.Add(lpp);
             metadata.Extents.AddRange(p.Extents);
         }

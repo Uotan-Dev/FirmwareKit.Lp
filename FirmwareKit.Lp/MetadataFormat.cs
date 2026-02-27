@@ -59,6 +59,37 @@ public unsafe struct Buffer36
     {
         fixed (byte* p = _element) return new ReadOnlySpan<byte>(p, 36);
     }
+
+    /// <summary>
+    /// Sets the buffer from a string using UTF-8 encoding.
+    /// </summary>
+    /// <param name="name">The name to set.</param>
+    public void SetName(string name)
+    {
+        Span<byte> nameSpan = stackalloc byte[36];
+        nameSpan.Clear();
+        var written = Encoding.UTF8.GetBytes(name, nameSpan.Slice(0, 35));
+        fixed (byte* p = _element)
+        {
+            var dest = new Span<byte>(p, 36);
+            nameSpan.CopyTo(dest);
+        }
+    }
+
+    /// <summary>
+    /// Gets the name from the buffer.
+    /// </summary>
+    /// <returns>Decoded UTF-8 string.</returns>
+    public readonly string GetName()
+    {
+        fixed (byte* p = _element)
+        {
+            var span = new ReadOnlySpan<byte>(p, 36);
+            var len = 0;
+            while (len < span.Length && span[len] != 0) len++;
+            return Encoding.UTF8.GetString(span.Slice(0, len));
+        }
+    }
 }
 
 /// <summary>
@@ -386,17 +417,7 @@ public struct LpMetadataPartition
     /// Gets the partition name as a string.
     /// </summary>
     /// <returns>The decoded name.</returns>
-    public string GetName()
-    {
-        ReadOnlySpan<byte> nameSpan = Name.AsSpan();
-        var len = 0;
-        while (len < nameSpan.Length && nameSpan[len] != 0)
-        {
-            len++;
-        }
-
-        return Encoding.UTF8.GetString(nameSpan.Slice(0, len).ToArray());
-    }
+    public string GetName() => Name.GetName();
 }
 
 /// <summary>
@@ -456,17 +477,7 @@ public struct LpMetadataPartitionGroup
     /// Gets the group name as a string.
     /// </summary>
     /// <returns>Decoded name.</returns>
-    public string GetName()
-    {
-        ReadOnlySpan<byte> nameSpan = Name.AsSpan();
-        var len = 0;
-        while (len < nameSpan.Length && nameSpan[len] != 0)
-        {
-            len++;
-        }
-
-        return Encoding.UTF8.GetString(nameSpan.Slice(0, len).ToArray());
-    }
+    public string GetName() => Name.GetName();
 }
 
 /// <summary>
@@ -514,15 +525,5 @@ public struct LpMetadataBlockDevice
     /// Gets the partition name backing this block device.
     /// </summary>
     /// <returns>Decoded name.</returns>
-    public string GetPartitionName()
-    {
-        ReadOnlySpan<byte> nameSpan = PartitionName.AsSpan();
-        var len = 0;
-        while (len < nameSpan.Length && nameSpan[len] != 0)
-        {
-            len++;
-        }
-
-        return Encoding.UTF8.GetString(nameSpan.Slice(0, len).ToArray());
-    }
+    public string GetPartitionName() => PartitionName.GetName();
 }

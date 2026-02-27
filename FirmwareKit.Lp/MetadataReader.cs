@@ -136,7 +136,6 @@ public class MetadataReader : ILpMetadataReader
     /// <exception cref="InvalidDataException">Thrown if magic number or checksum mismatch occurs.</exception>
     public static void ParseGeometry(ReadOnlySpan<byte> buffer, out LpMetadataGeometry geometry)
     {
-        geometry = default;
         if (buffer.Length < System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataGeometry>())
         {
             throw new ArgumentException("Data length is insufficient to parse LpMetadataGeometry.");
@@ -156,19 +155,17 @@ public class MetadataReader : ILpMetadataReader
 
         ReadOnlySpan<byte> originalChecksum = geometry.Checksum.AsSpan();
 
-        var tempBuffer = buffer.Slice(0, (int)geometry.StructSize).ToArray();
-        for (var i = 0; i < 32; i++)
-        {
-            tempBuffer[8 + i] = 0;
-        }
+        Span<byte> hashBuffer = stackalloc byte[(int)geometry.StructSize];
+        buffer.Slice(0, (int)geometry.StructSize).CopyTo(hashBuffer);
 
-        var computed = CompatibilityExtensions.ComputeSha256(tempBuffer);
-        for (var i = 0; i < 32; i++)
+        hashBuffer.Slice(8, 32).Clear();
+
+        Span<byte> computed = stackalloc byte[32];
+        CompatibilityExtensions.TryComputeSha256(hashBuffer, computed);
+
+        if (!computed.SequenceEqual(originalChecksum))
         {
-            if (computed[i] != originalChecksum[i])
-            {
-                throw new InvalidDataException("LpMetadataGeometry checksum mismatch.");
-            }
+            throw new InvalidDataException("LpMetadataGeometry checksum mismatch.");
         }
     }
 
@@ -181,8 +178,8 @@ public class MetadataReader : ILpMetadataReader
     /// <exception cref="InvalidDataException">Thrown if header or tables fail validation.</exception>
     public static LpMetadata ParseMetadata(LpMetadataGeometry geometry, Stream stream)
     {
-        var headerBuffer = new byte[System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataHeader>()];
-        if (stream.Read(headerBuffer, 0, headerBuffer.Length) != headerBuffer.Length)
+        Span<byte> headerBuffer = stackalloc byte[System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataHeader>()];
+        if (stream.Read(headerBuffer) != headerBuffer.Length)
         {
             throw new InvalidDataException("Could not read LpMetadataHeader.");
         }
@@ -195,19 +192,16 @@ public class MetadataReader : ILpMetadataReader
 
         ReadOnlySpan<byte> originalHeaderChecksum = header.HeaderChecksum.AsSpan();
 
-        var headerCopy = (byte[])headerBuffer.Clone();
-        for (var i = 0; i < 32; i++)
-        {
-            headerCopy[12 + i] = 0;
-        }
+        Span<byte> headerHashBuffer = stackalloc byte[(int)header.HeaderSize];
+        headerBuffer.Slice(0, (int)header.HeaderSize).CopyTo(headerHashBuffer);
+        headerHashBuffer.Slice(12, 32).Clear();
 
-        var computedHeader = CompatibilityExtensions.ComputeSha256(headerCopy, 0, (int)header.HeaderSize);
-        for (var i = 0; i < 32; i++)
+        Span<byte> computedHeader = stackalloc byte[32];
+        CompatibilityExtensions.TryComputeSha256(headerHashBuffer, computedHeader);
+
+        if (!computedHeader.SequenceEqual(originalHeaderChecksum))
         {
-            if (computedHeader[i] != originalHeaderChecksum[i])
-            {
-                throw new InvalidDataException("LpMetadataHeader checksum mismatch.");
-            }
+            throw new InvalidDataException("LpMetadataHeader checksum mismatch.");
         }
 
         var tablesBuffer = new byte[header.TablesSize];
@@ -218,13 +212,12 @@ public class MetadataReader : ILpMetadataReader
 
         ReadOnlySpan<byte> originalTablesChecksum = header.TablesChecksum.AsSpan();
 
-        var computedTables = CompatibilityExtensions.ComputeSha256(tablesBuffer);
-        for (var i = 0; i < 32; i++)
+        Span<byte> computedTables = stackalloc byte[32];
+        CompatibilityExtensions.TryComputeSha256(tablesBuffer, computedTables);
+
+        if (!computedTables.SequenceEqual(originalTablesChecksum))
         {
-            if (computedTables[i] != originalTablesChecksum[i])
-            {
-                throw new InvalidDataException("Metadata tables checksum mismatch.");
-            }
+            throw new InvalidDataException("Metadata tables checksum mismatch.");
         }
 
         var metadata = new LpMetadata
@@ -250,13 +243,13 @@ public class MetadataReader : ILpMetadataReader
     /// <exception cref="InvalidDataException">Thrown if header or tables fail validation.</exception>
     public static async Task<LpMetadata> ParseMetadataAsync(LpMetadataGeometry geometry, Stream stream)
     {
-        var headerBuffer = new byte[System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataHeader>()];
-        if (await stream.ReadAsync(headerBuffer, 0, headerBuffer.Length).ConfigureAwait(false) != headerBuffer.Length)
+        var headerBufferArray = new byte[System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataHeader>()];
+        if (await stream.ReadAsync(headerBufferArray, 0, headerBufferArray.Length).ConfigureAwait(false) != headerBufferArray.Length)
         {
             throw new InvalidDataException("Could not read LpMetadataHeader.");
         }
 
-        var header = LpMetadataHeader.FromBytes(headerBuffer);
+        var header = LpMetadataHeader.FromBytes(headerBufferArray);
         if (header.Magic != MetadataFormat.LP_METADATA_HEADER_MAGIC)
         {
             throw new InvalidDataException("Invalid LpMetadataHeader magic.");
@@ -264,19 +257,15 @@ public class MetadataReader : ILpMetadataReader
 
         ReadOnlySpan<byte> originalHeaderChecksum = header.HeaderChecksum.AsSpan();
 
-        var headerCopy = (byte[])headerBuffer.Clone();
-        for (var i = 0; i < 32; i++)
-        {
-            headerCopy[12 + i] = 0;
-        }
+        var headerHashBuffer = (byte[])headerBufferArray.Clone();
+        headerHashBuffer.AsSpan(12, 32).Clear();
 
-        var computedHeader = CompatibilityExtensions.ComputeSha256(headerCopy, 0, (int)header.HeaderSize);
-        for (var i = 0; i < 32; i++)
+        Span<byte> computedHeader = stackalloc byte[32];
+        CompatibilityExtensions.TryComputeSha256(headerHashBuffer, computedHeader);
+
+        if (!computedHeader.SequenceEqual(originalHeaderChecksum))
         {
-            if (computedHeader[i] != originalHeaderChecksum[i])
-            {
-                throw new InvalidDataException("LpMetadataHeader checksum mismatch.");
-            }
+            throw new InvalidDataException("LpMetadataHeader checksum mismatch.");
         }
 
         var tablesBuffer = new byte[header.TablesSize];
@@ -287,13 +276,12 @@ public class MetadataReader : ILpMetadataReader
 
         ReadOnlySpan<byte> originalTablesChecksum = header.TablesChecksum.AsSpan();
 
-        var computedTables = CompatibilityExtensions.ComputeSha256(tablesBuffer);
-        for (var i = 0; i < 32; i++)
+        Span<byte> computedTables = stackalloc byte[32];
+        CompatibilityExtensions.TryComputeSha256(tablesBuffer, computedTables);
+
+        if (!computedTables.SequenceEqual(originalTablesChecksum))
         {
-            if (computedTables[i] != originalTablesChecksum[i])
-            {
-                throw new InvalidDataException("Metadata tables checksum mismatch.");
-            }
+            throw new InvalidDataException("Metadata tables checksum mismatch.");
         }
 
         var metadata = new LpMetadata

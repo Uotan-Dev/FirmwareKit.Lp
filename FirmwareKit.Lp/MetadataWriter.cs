@@ -13,6 +13,16 @@ public class MetadataWriter : ILpMetadataWriter
     /// Gets a default instance of the metadata writer.
     /// </summary>
     public static MetadataWriter Default => _default;
+
+    private static void WriteStruct<T>(Span<byte> destination, ref T value) where T : unmanaged
+    {
+#if NETCOREAPP3_0_OR_GREATER || NET5_0_OR_GREATER
+        MemoryMarshal.Write(destination, in value);
+#else
+        MemoryMarshal.Write(destination, ref value);
+#endif
+    }
+
     /// <summary>
     /// Serializes an <see cref="LpMetadataGeometry"/> into a padded byte array.
     /// </summary>
@@ -28,17 +38,13 @@ public class MetadataWriter : ILpMetadataWriter
             geometry.Checksum[i] = 0;
         }
 
-        var blob = new byte[System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataGeometry>()];
-        MemoryMarshal.Write(blob, ref geometry);
-
-        var hash = CompatibilityExtensions.ComputeSha256(blob);
-        for (var i = 0; i < 32; i++)
-        {
-            blob[8 + i] = hash[i];
-        }
-
         var padded = new byte[MetadataFormat.LP_METADATA_GEOMETRY_SIZE];
-        Array.Copy(blob, padded, blob.Length);
+        WriteStruct(padded, ref geometry);
+
+        Span<byte> hash = stackalloc byte[32];
+        CompatibilityExtensions.TryComputeSha256(padded.AsSpan(0, (int)geometry.StructSize), hash);
+        hash.CopyTo(padded.AsSpan(8, 32));
+
         return padded;
     }
 
@@ -51,36 +57,37 @@ public class MetadataWriter : ILpMetadataWriter
     {
         var header = metadata.Header;
 
-        var partitions = TableToBytes(metadata.Partitions);
-        var extents = TableToBytes(metadata.Extents);
-        var groups = TableToBytes(metadata.Groups);
-        var blockDevices = TableToBytes(metadata.BlockDevices);
+        uint partitionTableSize = (uint)(metadata.Partitions.Count * System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataPartition>());
+        uint extentTableSize = (uint)(metadata.Extents.Count * System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataExtent>());
+        uint groupTableSize = (uint)(metadata.Groups.Count * System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataPartitionGroup>());
+        uint blockDeviceTableSize = (uint)(metadata.BlockDevices.Count * System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataBlockDevice>());
 
         header.Partitions.Offset = 0;
         header.Partitions.NumEntries = (uint)metadata.Partitions.Count;
         header.Partitions.EntrySize = (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataPartition>();
 
-        header.Extents.Offset = (uint)partitions.Length;
+        header.Extents.Offset = partitionTableSize;
         header.Extents.NumEntries = (uint)metadata.Extents.Count;
         header.Extents.EntrySize = (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataExtent>();
 
-        header.Groups.Offset = header.Extents.Offset + (uint)extents.Length;
+        header.Groups.Offset = header.Extents.Offset + extentTableSize;
         header.Groups.NumEntries = (uint)metadata.Groups.Count;
         header.Groups.EntrySize = (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataPartitionGroup>();
 
-        header.BlockDevices.Offset = header.Groups.Offset + (uint)groups.Length;
+        header.BlockDevices.Offset = header.Groups.Offset + groupTableSize;
         header.BlockDevices.NumEntries = (uint)metadata.BlockDevices.Count;
         header.BlockDevices.EntrySize = (uint)System.Runtime.CompilerServices.Unsafe.SizeOf<LpMetadataBlockDevice>();
 
-        header.TablesSize = header.BlockDevices.Offset + (uint)blockDevices.Length;
+        header.TablesSize = header.BlockDevices.Offset + blockDeviceTableSize;
 
         var tables = new byte[header.TablesSize];
-        Array.Copy(partitions, 0, tables, (int)header.Partitions.Offset, partitions.Length);
-        Array.Copy(extents, 0, tables, (int)header.Extents.Offset, extents.Length);
-        Array.Copy(groups, 0, tables, (int)header.Groups.Offset, groups.Length);
-        Array.Copy(blockDevices, 0, tables, (int)header.BlockDevices.Offset, blockDevices.Length);
+        WriteTable(tables.AsSpan((int)header.Partitions.Offset), metadata.Partitions);
+        WriteTable(tables.AsSpan((int)header.Extents.Offset), metadata.Extents);
+        WriteTable(tables.AsSpan((int)header.Groups.Offset), metadata.Groups);
+        WriteTable(tables.AsSpan((int)header.BlockDevices.Offset), metadata.BlockDevices);
 
-        var tableHash = CompatibilityExtensions.ComputeSha256(tables);
+        Span<byte> tableHash = stackalloc byte[32];
+        CompatibilityExtensions.TryComputeSha256(tables, tableHash);
         for (var i = 0; i < 32; i++)
         {
             header.TablesChecksum[i] = tableHash[i];
@@ -95,35 +102,28 @@ public class MetadataWriter : ILpMetadataWriter
         }
 
         var headerBytes = new byte[header.HeaderSize];
-        MemoryMarshal.Write(headerBytes, ref header);
+        WriteStruct(headerBytes, ref header);
 
-        var headerHash = CompatibilityExtensions.ComputeSha256(headerBytes);
-        for (var i = 0; i < 32; i++)
-        {
-            headerBytes[12 + i] = headerHash[i];
-        }
+        Span<byte> headerHash = stackalloc byte[32];
+        CompatibilityExtensions.TryComputeSha256(headerBytes, headerHash);
+        headerHash.CopyTo(headerBytes.AsSpan(12, 32));
 
         var result = new byte[headerBytes.Length + tables.Length];
-        Array.Copy(headerBytes, 0, result, 0, headerBytes.Length);
-        Array.Copy(tables, 0, result, headerBytes.Length, tables.Length);
+        Buffer.BlockCopy(headerBytes, 0, result, 0, headerBytes.Length);
+        Buffer.BlockCopy(tables, 0, result, headerBytes.Length, tables.Length);
         return result;
     }
 
-    private byte[] TableToBytes<T>(List<T> list) where T : unmanaged
+    private void WriteTable<T>(Span<byte> destination, List<T> list) where T : unmanaged
     {
-        if (list.Count == 0)
-        {
-            return [];
-        }
+        if (list.Count == 0) return;
 
         var entrySize = System.Runtime.CompilerServices.Unsafe.SizeOf<T>();
-        var result = new byte[list.Count * entrySize];
         for (var i = 0; i < list.Count; i++)
         {
             var entry = list[i];
-            MemoryMarshal.Write(result.AsSpan(i * entrySize), ref entry);
+            WriteStruct(destination.Slice(i * entrySize, entrySize), ref entry);
         }
-        return result;
     }
 
     /// <summary>

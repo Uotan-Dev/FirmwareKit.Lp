@@ -34,11 +34,10 @@ public static class Utility
     /// <returns>The aligned value.</returns>
     public static ulong AlignTo(ulong value, uint alignment)
     {
-        if (alignment == 0)
+        if (alignment <= 1)
         {
             return value;
         }
-
 
         var remainder = value % alignment;
         return remainder == 0 ? value : value + (alignment - remainder);
@@ -68,22 +67,22 @@ public static class Utility
     /// <returns>Detected filesystem details.</returns>
     public static FilesystemInfo DetectFilesystem(Stream stream, ulong partitionStartOffset)
     {
+        byte[] buffer = System.Buffers.ArrayPool<byte>.Shared.Rent(4096);
         try
         {
-            var buffer = new byte[4096];
             stream.Seek((long)partitionStartOffset, SeekOrigin.Begin);
-            if (stream.Read(buffer, 0, buffer.Length) < buffer.Length)
+            if (stream.Read(buffer, 0, 4096) < 4096)
             {
                 return new FilesystemInfo { Type = "Unknown", Size = 0 };
             }
 
             // SquashFS
-            if (BitConverter.ToUInt32(buffer, 0) == 0x73717368) // 'hsqs'
+            if (BinaryPrimitives.ReadUInt32LittleEndian(buffer) == 0x73717368) // 'hsqs'
             {
                 return new FilesystemInfo
                 {
                     Type = "SquashFS",
-                    Size = BitConverter.ToUInt64(buffer, 40)
+                    Size = BinaryPrimitives.ReadUInt64LittleEndian(buffer.AsSpan(40))
                 };
             }
 
@@ -110,20 +109,23 @@ public static class Utility
             // EXT2/3/4
             if (BinaryPrimitives.ReadUInt16LittleEndian(sb.Slice(0x38, 2)) == 0xEF53)
             {
+                var log2_block_size = BinaryPrimitives.ReadUInt32LittleEndian(sb.Slice(0x18, 4));
+                var blocks_count = BinaryPrimitives.ReadUInt32LittleEndian(sb.Slice(0x4, 4));
                 return new FilesystemInfo
                 {
                     Type = "EXT4",
-                    Size = (ulong)BinaryPrimitives.ReadUInt32LittleEndian(sb.Slice(0x4, 4)) * (1024u << (int)BinaryPrimitives.ReadUInt32LittleEndian(sb.Slice(0x18, 4)))
+                    Size = (ulong)blocks_count * (1024u << (int)log2_block_size)
                 };
             }
 
             // F2FS
             if (BinaryPrimitives.ReadUInt32LittleEndian(sb.Slice(0, 4)) == 0xF2F52010)
             {
+                var block_count = BinaryPrimitives.ReadUInt32LittleEndian(sb.Slice(0x48, 4));
                 return new FilesystemInfo
                 {
                     Type = "F2FS",
-                    Size = (ulong)BinaryPrimitives.ReadUInt32LittleEndian(sb.Slice(0x48, 4)) * 4096
+                    Size = (ulong)block_count * 4096
                 };
             }
 
@@ -140,6 +142,10 @@ public static class Utility
         catch (Exception ex)
         {
             LpLogger.Error($"Error detecting filesystem: {ex.Message}");
+        }
+        finally
+        {
+            System.Buffers.ArrayPool<byte>.Shared.Return(buffer);
         }
 
         return new FilesystemInfo { Type = "Unknown", Size = 0 };
